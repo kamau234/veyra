@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tests
+.pytest_cache/
+.pytest-home/
+
+# PyInstaller (VEYRA.spec is kept; build output is regenerable)
+build/
+dist/
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# VEYRA runtime data (created on first launch; restore from backups, not git)
+/veyra.db
+/veyra.db-wal
+/veyra.db-shm
+/media/
+/logs/
+/backups/
