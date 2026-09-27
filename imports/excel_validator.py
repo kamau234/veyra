@@ -16,16 +16,24 @@ from core.exceptions import FileError, ImportRowError, ValidationError
 from core.money import parse_money, to_int, to_money
 from db.session import session_scope
 from imports.excel_reader import RawRow, RawWorkbook
-from imports.excel_template import TEMPLATE_COLUMNS
+from imports.excel_template import REQUIRED_COLUMNS, TEMPLATE_COLUMNS
 from models import Product
 from repositories.category_repository import CategoryRepository, normalize_name
 from repositories.product_repository import ProductRepository
 from services import product_service
+from services.product_service import LEVEL_MAX_LENGTH
 
 
 @dataclass(frozen=True)
 class ImportRow:
-    """A fully valid, normalized workbook row ready to be committed."""
+    """A fully valid, normalized workbook row ready to be committed.
+
+    ``subcategory`` and ``brand`` are ``None`` when the workbook has no such
+    column at all (a template saved before the hierarchy existed). ``None``
+    means "leave whatever the product already has alone" — an old workbook
+    must never silently wipe the levels a newer one filled in. An empty string
+    means the cell was there and deliberately left blank.
+    """
 
     row_number: int
     code: str
@@ -37,6 +45,8 @@ class ImportRow:
     opening_stock: int
     reorder_level: int
     vat_applicable: bool
+    subcategory: str | None = None
+    brand: str | None = None
     existing_product_id: int | None = None
     changes: list[str] = field(default_factory=list)
 
@@ -58,6 +68,9 @@ class ImportPreview:
     rejected: list[RejectedRow]
     categories_to_create: list[str]
     headers: list[str]
+    #: Optional hierarchy columns this workbook does not carry, so the UI can
+    #: say plainly that those levels will be left untouched.
+    missing_optional: list[str] = field(default_factory=list)
 
     @property
     def is_valid(self) -> bool:
@@ -103,6 +116,9 @@ def _validate_row(raw: RawRow, seen_codes: set[str]) -> tuple[ImportRow | None, 
     category = normalize_name(values.get("Category"))
     if not category:
         errors.append(ImportRowError(raw.row_number, "Category", "Category is required."))
+
+    subcategory = _optional_level(raw, "Subcategory", errors)
+    brand = _optional_level(raw, "Brand", errors)
 
     unit = normalize_unit_or_none(values.get("Unit"))
     if unit is None:
@@ -162,9 +178,32 @@ def _validate_row(raw: RawRow, seen_codes: set[str]) -> tuple[ImportRow | None, 
             opening_stock=quantities["Opening Stock"],
             reorder_level=quantities["Reorder Level"],
             vat_applicable=vat_applicable,
+            subcategory=subcategory,
+            brand=brand,
         ),
         [],
     )
+
+
+def _optional_level(raw: RawRow, column: str, errors: list[ImportRowError]) -> str | None:
+    """Normalize a blankable hierarchy column.
+
+    Returns ``None`` when the workbook has no such column, otherwise the cell
+    text (possibly empty, meaning "deliberately blank").
+    """
+    if column not in raw.values:
+        return None
+    text = normalize_name(raw.values.get(column))
+    if text and len(text) > LEVEL_MAX_LENGTH:
+        errors.append(
+            ImportRowError(
+                raw.row_number,
+                column,
+                f"{column} is too long (maximum {LEVEL_MAX_LENGTH} characters).",
+            )
+        )
+        return None
+    return text
 
 
 def normalize_unit_or_none(value: object) -> str | None:
@@ -185,6 +224,13 @@ def _describe_changes(existing: Product, row: ImportRow) -> list[str]:
     new_category = row.category
     if existing.category_name != new_category:
         changes.append(f"Category: {existing.category_name} -> {new_category}")
+    for label, incoming, current in (
+        ("Subcategory", row.subcategory, existing.subcategory_name),
+        ("Brand", row.brand, existing.brand_name),
+    ):
+        # None means the workbook has no such column: nothing would change.
+        if incoming is not None and incoming != current:
+            changes.append(f"{label}: {current or '(blank)'} -> {incoming or '(blank)'}")
     if existing.unit != row.unit:
         changes.append(f"Unit: {existing.unit} -> {row.unit}")
 
@@ -220,11 +266,15 @@ def _pending_categories(rows: list[ImportRow], categories: CategoryRepository) -
 
 def validate_workbook(raw: RawWorkbook) -> ImportPreview:
     """Classify raw rows into add/update/rejected against the live catalogue."""
-    missing = [column for column in TEMPLATE_COLUMNS if column not in raw.headers]
+    missing = [column for column in REQUIRED_COLUMNS if column not in raw.headers]
     if missing:
         raise FileError(
             "The workbook is missing required columns: " + ", ".join(missing) + "."
         )
+    # Subcategory and Brand are optional: a workbook saved from an older
+    # template imports normally and leaves those levels alone. Columns are
+    # always matched by header name, so nothing can be read from the wrong one.
+    missing_optional = [column for column in TEMPLATE_COLUMNS if column not in raw.headers]
 
     add: list[ImportRow] = []
     update: list[ImportRow] = []
@@ -265,4 +315,5 @@ def validate_workbook(raw: RawWorkbook) -> ImportPreview:
         rejected=rejected,
         categories_to_create=categories_to_create,
         headers=list(raw.headers),
+        missing_optional=missing_optional,
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
+from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
 from core.exceptions import DatabaseError, VeyraError
@@ -14,6 +15,21 @@ from db.engine import get_engine
 logger = get_logger("db.session")
 
 _session_factory: sessionmaker[Session] | None = None
+
+#: Called after every committed unit of work (the cloud sync marks itself stale).
+_commit_hooks: list = []
+
+
+def register_commit_hook(hook) -> None:
+    if hook not in _commit_hooks:
+        _commit_hooks.append(hook)
+
+
+@event.listens_for(Session, "before_flush")
+def _note_pending_changes(session, _flush_context, _instances) -> None:
+    """Remember that this unit of work changed rows (flush hides it later)."""
+    if session.new or session.dirty or session.deleted:
+        session._veyra_changed = True
 
 
 def get_session_factory() -> sessionmaker[Session]:
@@ -48,7 +64,11 @@ def session_scope() -> Iterator[Session]:
     session = new_session()
     try:
         yield session
+        changed = bool(getattr(session, "_veyra_changed", False))
         session.commit()
+        if changed:
+            for hook in list(_commit_hooks):
+                hook()
     except VeyraError:
         session.rollback()
         raise

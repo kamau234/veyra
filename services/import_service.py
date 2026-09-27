@@ -88,6 +88,8 @@ def commit_import(preview: ImportPreview) -> ImportSummary:
                 code=row.code,
                 name=row.name,
                 category_id=category.id if category else None,
+                subcategory=row.subcategory or None,
+                brand=row.brand or None,
                 unit=row.unit,
                 cost_price=row.cost_price,
                 selling_price=row.selling_price,
@@ -152,6 +154,11 @@ def _apply_master_data(session, product: Product, row: ImportRow) -> None:
     product.selling_price = row.selling_price
     product.reorder_level = row.reorder_level
     product.vat_applicable = row.vat_applicable
+    # A workbook without these columns (None) leaves the stored levels alone.
+    if row.subcategory is not None:
+        product.subcategory = row.subcategory or None
+    if row.brand is not None:
+        product.brand = row.brand or None
     category, _ = CategoryRepository(session).get_or_create(row.category)
     product.category_id = category.id if category else product.category_id
     session.flush()

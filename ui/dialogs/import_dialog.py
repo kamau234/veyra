@@ -27,6 +27,12 @@ logger = get_logger("ui.import")
 XLSX_FILTER = "Excel workbooks (*.xlsx);;All files (*)"
 
 
+def _classification(row) -> str:
+    """The hierarchy a row would file the product under, broadest level first."""
+    levels = (row.category, row.subcategory, row.brand)
+    return " > ".join(level for level in levels if level) or "-"
+
+
 class ImportDialog(QDialog):
     """Blueprint 7.3: nothing is written until the preview is accepted."""
 
@@ -81,7 +87,7 @@ class ImportDialog(QDialog):
             Column("Row", "right", 60),
             Column("Code", "left", 110),
             Column("Product", stretch=True),
-            Column("Category", "left", 130),
+            Column("Classification", "left", 200),
             Column("Action", "center", 90),
             Column("What Changes / Why Rejected", stretch=True),
         ])
@@ -178,13 +184,19 @@ class ImportDialog(QDialog):
                 self.counts.text()
                 + f"  New categories: {', '.join(preview.categories_to_create)}."
             )
+        if preview.missing_optional:
+            missing = ", ".join(preview.missing_optional)
+            self.counts.setText(
+                self.counts.text()
+                + f"  This workbook has no {missing} column, so those levels are left as they are."
+            )
 
         rows = []
         for row in preview.add:
-            rows.append([row.row_number, row.code, row.name, row.category or "-",
+            rows.append([row.row_number, row.code, row.name, _classification(row),
                          StatusBadge("Add", "success"), "New product."])
         for row in preview.update:
-            rows.append([row.row_number, row.code, row.name, row.category or "-",
+            rows.append([row.row_number, row.code, row.name, _classification(row),
                          StatusBadge("Update", "info"),
                          "; ".join(row.changes) if row.changes else "No master-data changes."])
         for rejected in preview.rejected:

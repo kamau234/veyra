@@ -158,6 +158,31 @@ def test_settings_page_saves_appearance_and_vat(window, qapp):
     assert window.settings.font_size == "Large"
 
 
+def test_dark_theme_is_applied_and_remembered(window, qapp):
+    from ui import theme as theme_module
+
+    assert theme_module.resolve_theme("Dark") is theme_module.DARK
+    assert theme_module.resolve_theme("dark") is theme_module.DARK
+    assert theme_module.resolve_theme(None) is theme_module.LIGHT
+
+    window.show_page("settings")
+    qapp.processEvents()
+    page = window.page("settings")
+    dark_radio = next(b for b in page.theme_group.buttons() if b.text() == "Dark")
+    dark_radio.click()
+    page.save_appearance()
+    qapp.processEvents()
+
+    assert settings_service.get_settings().theme == "Dark"
+    assert qapp.veyra_theme is theme_module.DARK
+
+    window.show_page("dashboard")
+    window.show_page("settings")
+    qapp.processEvents()
+    assert window.page("settings")._selected_theme() == "Dark"
+    assert qapp.veyra_theme is theme_module.DARK
+
+
 def test_sales_page_shows_invoices_and_opens_detail(window, qapp, sample_products):
     cart = Cart()
     cart.add(product_service.find_by_code("DET001"), 2)

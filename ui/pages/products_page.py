@@ -36,6 +36,18 @@ def _thumb(product) -> Thumbnail:
     return thumb
 
 
+def _repopulate(combo: Combo, placeholder: str, entries: list[tuple[str, object]]) -> None:
+    """Refill a filter combo, keeping the current choice while it still applies."""
+    current = combo.currentText()
+    combo.blockSignals(True)
+    combo.clear()
+    combo.addItem(placeholder)
+    for label, data in entries:
+        combo.addItem(label, data)
+    combo.setCurrentIndex(max(combo.findText(current), 0))
+    combo.blockSignals(False)
+
+
 class ProductsPage(QWidget):
     def __init__(self, window):
         super().__init__()
@@ -59,7 +71,9 @@ class ProductsPage(QWidget):
             Column("", "center", 52),
             Column("Code", "left", 110),
             Column("Product", stretch=True),
-            Column("Category", "left", 140),
+            Column("Category", "left", 130),
+            Column("Subcategory", "left", 130),
+            Column("Brand", "left", 110),
             Column("Unit", "left", 80),
             Column("Cost", "right", 110),
             Column("Selling", "right", 110),
@@ -84,14 +98,24 @@ class ProductsPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(8)
 
-        self.search = SearchInput("Search code or name...")
-        self.search.setFixedWidth(260)
+        self.search = SearchInput("Search code, name, brand...")
+        self.search.setFixedWidth(220)
         self.search.textChanged.connect(self.refresh)
         row.addWidget(self.search)
 
         self.category_filter = Combo()
         self.category_filter.currentIndexChanged.connect(self.refresh)
         row.addWidget(self.category_filter)
+
+        self.subcategory_filter = Combo()
+        self.subcategory_filter.setToolTip("Subcategories inside the selected category")
+        self.subcategory_filter.currentIndexChanged.connect(self.refresh)
+        row.addWidget(self.subcategory_filter)
+
+        self.brand_filter = Combo()
+        self.brand_filter.setToolTip("Brands inside the selected category and subcategory")
+        self.brand_filter.currentIndexChanged.connect(self.refresh)
+        row.addWidget(self.brand_filter)
 
         self.status_filter = Combo(list(STATUS_FILTERS))
         self.status_filter.currentIndexChanged.connect(self.refresh)
@@ -157,23 +181,40 @@ class ProductsPage(QWidget):
             return None
         return self._rows[row]
 
-    def refresh(self) -> None:
-        categories = product_service.list_categories()
-        current = self.category_filter.currentText()
-        self.category_filter.blockSignals(True)
-        self.category_filter.clear()
-        self.category_filter.addItem("All Categories")
-        for category in categories:
-            self.category_filter.addItem(category.name, category.id)
-        index = self.category_filter.findText(current)
-        self.category_filter.setCurrentIndex(max(index, 0))
-        self.category_filter.blockSignals(False)
-
+    def _reload_filters(self) -> None:
+        """Cascade Category -> Subcategory -> Brand so each list only offers real values."""
+        _repopulate(
+            self.category_filter,
+            "All Categories",
+            [(category.name, category.id) for category in product_service.list_categories()],
+        )
         category_id = self.category_filter.currentData() or None
+        _repopulate(
+            self.subcategory_filter,
+            "All Subcategories",
+            [(name, name) for name in product_service.subcategory_names(category_id=category_id)],
+        )
+        subcategory = self.subcategory_filter.currentData() or None
+        _repopulate(
+            self.brand_filter,
+            "All Brands",
+            [
+                (name, name)
+                for name in product_service.brand_names(
+                    category_id=category_id, subcategory=subcategory
+                )
+            ],
+        )
+
+    def refresh(self) -> None:
+        self._reload_filters()
+
         try:
             self._rows = product_service.list_products(
                 search=self.search.text().strip() or None,
-                category_id=category_id,
+                category_id=self.category_filter.currentData() or None,
+                subcategory=self.subcategory_filter.currentData() or None,
+                brand=self.brand_filter.currentData() or None,
                 status=self.status_filter.currentText(),
                 sort=self.sort_filter.currentText(),
                 include_inactive=self.status_filter.currentText() == "Archived",
@@ -193,6 +234,8 @@ class ProductsPage(QWidget):
                 product.code,
                 product.name,
                 product.category_name or "Uncategorised",
+                product.subcategory_name or "-",
+                product.brand_name or "-",
                 product.unit,
                 format_money(product.cost_price),
                 format_money(product.selling_price),
@@ -206,14 +249,24 @@ class ProductsPage(QWidget):
         stats = product_service.catalogue_stats()
         self.summary.setText(
             f"{stats['products']} products, {stats['categories']} categories, "
+            f"{len(product_service.subcategory_names())} subcategories, "
+            f"{len(product_service.brand_names())} brands, "
             f"{stats['archived']} archived."
         )
         self._sync_actions()
 
     # --------------------------------------------------------------- actions
 
+    def _dialog_kwargs(self) -> dict:
+        """Existing hierarchy values, so the dialog suggests rather than retypes."""
+        return {
+            "categories": product_service.category_names(),
+            "subcategories": product_service.subcategory_names(),
+            "brands": product_service.brand_names(),
+        }
+
     def open_add_dialog(self) -> None:
-        dialog = ProductDialog(self, categories=product_service.category_names())
+        dialog = ProductDialog(self, **self._dialog_kwargs())
         if dialog.exec() and dialog.submitted:
             self.refresh()
             self.window_ref.notify(dialog.result_message)
@@ -222,8 +275,7 @@ class ProductsPage(QWidget):
         product = self.selected_product()
         if product is None:
             return
-        dialog = ProductDialog(self, product=product,
-                               categories=product_service.category_names())
+        dialog = ProductDialog(self, product=product, **self._dialog_kwargs())
         if dialog.exec() and dialog.submitted:
             self.refresh()
             self.window_ref.notify(dialog.result_message)
@@ -304,6 +356,8 @@ class ProductsPage(QWidget):
     def focus_product(self, product_id: int) -> None:
         self.search.clear()
         self.status_filter.setCurrentIndex(0)
+        self.subcategory_filter.setCurrentIndex(0)
+        self.brand_filter.setCurrentIndex(0)
         self.refresh()
         for row, product in enumerate(self._rows):
             if product.id == product_id:

@@ -9,15 +9,33 @@ tests and for keeping a clean demo dataset.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 #: veyra/ project root (the directory holding main.py).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def resource_root() -> Path:
+    """Where bundled read-only assets live.
+
+    A PyInstaller onefile build unpacks its data files into a temporary
+    directory exposed as ``sys._MEIPASS``; in a source checkout the assets sit
+    next to the project root.
+    """
+    bundled = getattr(sys, "_MEIPASS", None)
+    return Path(bundled) if bundled else PROJECT_ROOT
+
+
 def _data_home() -> Path:
     override = os.environ.get("VEYRA_HOME")
-    return Path(override).expanduser().resolve() if override else PROJECT_ROOT
+    if override:
+        return Path(override).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        # A onefile bundle unpacks its sources into a temp directory, so data
+        # must live beside the .exe the user launched or it vanishes on exit.
+        return Path(sys.executable).resolve().parent
+    return PROJECT_ROOT
 
 
 DATA_HOME = _data_home()
@@ -27,7 +45,8 @@ PROFILE_IMAGE_DIR = MEDIA_DIR / "profile"
 LOGO_IMAGE_DIR = MEDIA_DIR / "logos"
 LOG_DIR = DATA_HOME / "logs"
 BACKUP_DIR = DATA_HOME / "backups"
-ASSETS_DIR = PROJECT_ROOT / "assets"
+ASSETS_DIR = resource_root() / "assets"
+FONT_DIR = ASSETS_DIR / "fonts"
 
 DATABASE_PATH = DATA_HOME / "veyra.db"
 LOG_FILE = LOG_DIR / "veyra.log"

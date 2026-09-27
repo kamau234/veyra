@@ -70,6 +70,7 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     app.setOrganizationName(APP_NAME)
+    theme_module.register_fonts()
     _install_excepthook(app)
 
     try:

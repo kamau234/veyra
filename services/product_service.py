@@ -27,6 +27,8 @@ class ProductInput:
     code: str = ""
     name: str = ""
     category: str = ""
+    subcategory: str = ""
+    brand: str = ""
     unit: str = "Piece"
     cost_price: Decimal | str | int | float = ZERO
     selling_price: Decimal | str | int | float = ZERO
@@ -34,6 +36,16 @@ class ProductInput:
     reorder_level: int = 0
     vat_applicable: bool = True
     image_path: str | None = None
+
+
+#: Hierarchy levels below Category are free text with this much room.
+LEVEL_MAX_LENGTH = 120
+
+
+def normalize_level(value: str | None) -> str | None:
+    """Collapse whitespace on a subcategory/brand cell; blank becomes None."""
+    text = " ".join(str(value or "").split())
+    return text or None
 
 
 def normalize_unit(unit: str | None) -> str:
@@ -85,6 +97,14 @@ def validate(data: ProductInput, session: Session, *, exclude_id: int | None = N
     if not name:
         errors.append("Product Name is required.")
 
+    # Subcategory and brand are optional levels; when present they must fit.
+    levels: dict[str, str | None] = {}
+    for label, value in (("Subcategory", data.subcategory), ("Brand", data.brand)):
+        text = normalize_level(value)
+        if text is not None and len(text) > LEVEL_MAX_LENGTH:
+            errors.append(f"{label} is too long (maximum {LEVEL_MAX_LENGTH} characters).")
+        levels[label.lower()] = text
+
     try:
         cost_price = parse_money(data.cost_price)
     except ValueError:
@@ -121,6 +141,8 @@ def validate(data: ProductInput, session: Session, *, exclude_id: int | None = N
         "code": code,
         "name": name,
         "category_name": category_name,
+        "subcategory": levels["subcategory"],
+        "brand": levels["brand"],
         "unit": normalize_unit(data.unit),
         "cost_price": cost_price,
         "selling_price": selling_price,
@@ -134,6 +156,8 @@ def validate(data: ProductInput, session: Session, *, exclude_id: int | None = N
 def _apply_fields(session: Session, product: Product, fields: dict, *, include_stock: bool) -> None:
     product.code = fields["code"]
     product.name = fields["name"]
+    product.subcategory = fields.get("subcategory")
+    product.brand = fields.get("brand")
     product.unit = fields["unit"]
     product.cost_price = fields["cost_price"]
     product.selling_price = fields["selling_price"]
@@ -266,6 +290,63 @@ def list_categories() -> list[Category]:
 
 def category_names() -> list[str]:
     return [category.name for category in list_categories()]
+
+
+def subcategory_names(*, category_id: int | None = None) -> list[str]:
+    """Subcategories in use, optionally narrowed to one category."""
+    with session_scope() as session:
+        return ProductRepository(session).subcategories(category_id=category_id)
+
+
+def brand_names(*, category_id: int | None = None, subcategory: str | None = None) -> list[str]:
+    """Brands in use, optionally narrowed to a category or subcategory."""
+    with session_scope() as session:
+        return ProductRepository(session).brands(
+            category_id=category_id, subcategory=subcategory
+        )
+
+
+def catalogue_hierarchy(*, include_inactive: bool = False) -> dict:
+    """Category -> Subcategory -> Brand -> products, for grouping and reports.
+
+    Products without a subcategory sit under ``""``; the same goes for a
+    missing brand, so nothing is invented to fill the hierarchy in.
+    """
+    tree: dict = {}
+    for product in list_products(sort="Name (A-Z)", include_inactive=include_inactive):
+        categories = tree.setdefault(product.category_name, {})
+        subcategories = categories.setdefault(product.subcategory_name, {})
+        subcategories.setdefault(product.brand_name, []).append(product)
+    return _sorted_levels(tree)
+
+
+def _sorted_levels(node: dict) -> dict:
+    """Sort every hierarchy level alphabetically, blank names last."""
+    ordered = sorted(node.items(), key=lambda item: (item[0] == "", item[0].lower()))
+    return {
+        key: _sorted_levels(value) if isinstance(value, dict) else value
+        for key, value in ordered
+    }
+
+
+def hierarchy_rows(*, include_inactive: bool = False) -> list[dict]:
+    """The catalogue flattened into hierarchy rows, broadest level first."""
+    rows: list[dict] = []
+    for category, subcategories in catalogue_hierarchy(include_inactive=include_inactive).items():
+        for subcategory, brands in subcategories.items():
+            for brand, products in brands.items():
+                for product in products:
+                    rows.append(
+                        {
+                            "category": category,
+                            "subcategory": subcategory,
+                            "brand": brand,
+                            "name": product.name,
+                            "code": product.code,
+                            "product": product,
+                        }
+                    )
+    return rows
 
 
 def pos_products(*, search: str | None = None, category_id: int | None = None) -> list[Product]:

@@ -26,3 +26,5 @@ Thumbs.db
 /media/
 /logs/
 /backups/
+/sync_id.txt
+/sync_state.json

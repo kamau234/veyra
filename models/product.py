@@ -28,6 +28,11 @@ class Product(Base):
     category_id: Mapped[int | None] = mapped_column(
         ForeignKey("categories.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    #: Category -> Subcategory -> Brand -> Product Name -> Code. Subcategory and
+    #: brand are free text on purpose: they stay NULL for products where they
+    #: genuinely do not apply, and no lookup tables are invented for them.
+    subcategory: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    brand: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     unit: Mapped[str] = mapped_column(String(30), nullable=False, default="Piece")
     cost_price: Mapped[object] = mapped_column(Money, nullable=False, default=0)
     selling_price: Mapped[object] = mapped_column(Money, nullable=False, default=0)
@@ -69,6 +74,23 @@ class Product(Base):
     @property
     def category_name(self) -> str:
         return self.category.name if self.category else "Uncategorised"
+
+    @property
+    def subcategory_name(self) -> str:
+        return self.subcategory or ""
+
+    @property
+    def brand_name(self) -> str:
+        return self.brand or ""
+
+    @property
+    def classification(self) -> str:
+        """The non-empty hierarchy levels, broadest first, for display/reports."""
+        return " > ".join(
+            part
+            for part in (self.category_name, self.subcategory or "", self.brand or "")
+            if part and part != "Uncategorised"
+        )
 
     def has_low_stock(self) -> bool:
         return self.stock_status == StockStatus.LOW_STOCK

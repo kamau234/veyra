@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QFrame,
@@ -25,9 +25,10 @@ from PySide6.QtWidgets import (
 
 from core.config import APP_NAME, APP_VERSION
 from core.logger import get_logger
-from services import reporting_service, settings_service
+from services import reporting_service, settings_service, sync_service
 from services.settings_service import SettingsSnapshot
 from ui import theme as theme_module
+from ui.sync_worker import SyncWorker
 from ui.widgets.fields import SearchInput
 from ui.widgets.images import avatar_pixmap
 from ui.widgets.toast import ToastHost
@@ -35,6 +36,11 @@ from ui.widgets.toast import ToastHost
 logger = get_logger("ui.shell")
 
 SIDEBAR_WIDTH = 224
+SYNC_INTERVAL_MS = 5 * 60 * 1000
+SYNC_STALE_HOURS = 12
+
+#: Keeps a closing window's sync thread alive until it finishes on its own.
+_ORPHANED_SYNC_WORKERS: set = set()
 
 NAV_ITEMS: tuple[tuple[str, str], ...] = (
     ("dashboard", "Dashboard"),
@@ -83,6 +89,12 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(content, stretch=1)
 
         self.toasts = ToastHost(self)
+
+        self._sync_worker: SyncWorker | None = None
+        self._sync_timer = QTimer(self)
+        self._sync_timer.setInterval(SYNC_INTERVAL_MS)
+        self._sync_timer.timeout.connect(self._auto_sync_tick)
+        self._sync_timer.start()
 
         self.apply_settings_theme()
 
@@ -242,6 +254,64 @@ class MainWindow(QMainWindow):
 
     def notify(self, message: str, kind: str = "success") -> None:
         self.toasts.show(message, kind)
+
+    def run_sync(self, action, mode: str, on_done=None) -> None:
+        """Run one cloud sync action in the background and toast the outcome."""
+        if not sync_service.configured():
+            self.notify("Cloud sync is not configured on this build.", "warning")
+            return
+        if self._sync_worker is not None and self._sync_worker.isRunning():
+            self.notify("A cloud sync is already running.", "warning")
+            return
+        worker = SyncWorker(action, mode, self)
+        worker.finished_result.connect(
+            lambda result, callback=on_done: self._sync_finished(result, callback)
+        )
+        self._sync_worker = worker
+        worker.start()
+
+    def _sync_finished(self, result, on_done=None) -> None:
+        self._sync_worker = None
+        self.notify(result.message, "success" if result.ok else "warning")
+        settings_page = self._pages.get("settings")
+        refresh_cloud = getattr(settings_page, "_refresh_cloud", None)
+        if callable(refresh_cloud):
+            refresh_cloud()
+        if callable(on_done):
+            on_done(result)
+
+    def _auto_sync_tick(self) -> None:
+        if not sync_service.configured() or not sync_service.auto_sync_enabled():
+            return
+        state = sync_service.load_state()
+        stale = True
+        if state.last_at:
+            try:
+                age = datetime.now() - datetime.fromisoformat(state.last_at)
+                stale = age.total_seconds() > SYNC_STALE_HOURS * 3600
+            except ValueError:
+                stale = True
+        if sync_service.consume_dirty() or stale:
+            self.run_sync(sync_service.push, "push")
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if (
+            sync_service.configured()
+            and sync_service.auto_sync_enabled()
+            and sync_service.consume_dirty()
+            and not (self._sync_worker is not None and self._sync_worker.isRunning())
+        ):
+            worker = SyncWorker(sync_service.push, "push", self)
+            self._sync_worker = worker
+            worker.start()
+            worker.wait(3000)
+        if self._sync_worker is not None and self._sync_worker.isRunning():
+            # Let the upload finish in the background instead of destroying it.
+            worker = self._sync_worker
+            worker.setParent(None)
+            _ORPHANED_SYNC_WORKERS.add(worker)
+            worker.finished_result.connect(lambda _result: _ORPHANED_SYNC_WORKERS.discard(worker))
+        super().closeEvent(event)
 
     def _run_global_search(self) -> None:
         term = self.search.text().strip()

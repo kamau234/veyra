@@ -20,8 +20,24 @@ from core.logger import get_logger
 
 logger = get_logger("imports.template")
 
-#: Required columns, in order. One definition — reader and validator import this.
+#: Every column the template writes, in order. One definition — the reader and
+#: the validator import this so names and order can never drift apart.
 TEMPLATE_COLUMNS = (
+    "Product Code",
+    "Product Name",
+    "Category",
+    "Subcategory",
+    "Brand",
+    "Unit",
+    "Cost Price",
+    "Selling Price",
+    "Opening Stock",
+    "Reorder Level",
+    "VAT Applicable",
+)
+
+#: Columns a workbook must carry to be read at all (blueprint 7.2).
+REQUIRED_COLUMNS = (
     "Product Code",
     "Product Name",
     "Category",
@@ -33,6 +49,10 @@ TEMPLATE_COLUMNS = (
     "VAT Applicable",
 )
 
+#: Optional hierarchy levels. A workbook without these headers (one saved from
+#: an older template) still imports; the levels are simply left blank.
+OPTIONAL_COLUMNS = ("Subcategory", "Brand")
+
 TEMPLATE_TITLE = "VEYRA PRODUCT IMPORT TEMPLATE"
 BRAND_FILL = "2563EB"
 HEADER_FILL = "DBEAFE"
@@ -42,15 +62,20 @@ BORDER_COLOR = "9CA3AF"
 DROPDOWN_LAST_ROW = 500
 
 _EXAMPLE_ROWS = (
-    ("DET001", "Ariel Detergent 1kg", "Detergents", "Piece", 290, 350, 40, 10, "Yes"),
-    ("BRD001", "Supreme Bread 400g", "Bakery", "Piece", 45, 60, 25, 8, "No"),
-    ("MIL001", "Fresh Milk 500ml", "Beverages", "Litre", 55, 70, 30, 12, "Yes"),
+    ("COF001", "Classic", "Beverages", "Coffee", "Nescafé", "Piece", 480, 570, 24, 6, "Yes"),
+    ("COF002", "Gold", "Beverages", "Coffee", "Nescafé", "Piece", 850, 990, 12, 4, "Yes"),
+    ("COF003", "House Blend", "Beverages", "Coffee", "Dormans", "Pack", 620, 750, 18, 5, "Yes"),
+    ("DET001", "1kg Washing Powder", "Detergents", "Washing Powder", "Ariel", "Piece", 290, 350, 40, 10, "Yes"),
+    ("DET002", "1kg Washing Powder", "Detergents", "Washing Powder", "Omo", "Piece", 260, 320, 35, 10, "Yes"),
+    ("DIS001", "Dishwashing Liquid 750ml", "Detergents", "Dishwashing", "Sunlight", "Bottle", 210, 265, 30, 8, "Yes"),
 )
 
 _COLUMN_WIDTHS = {
     "Product Code": 16,
     "Product Name": 32,
     "Category": 18,
+    "Subcategory": 20,
+    "Brand": 16,
     "Unit": 12,
     "Cost Price": 14,
     "Selling Price": 14,
@@ -62,25 +87,45 @@ _COLUMN_WIDTHS = {
 INSTRUCTIONS = (
     "1. Do not rename the required columns.",
     "2. Enter one product per row.",
-    "3. Category can be a new or existing category.",
-    "4. Prices must be numeric; do not type currency symbols into cells.",
-    "5. Opening Stock and Reorder Level must be non-negative numbers.",
-    "6. VAT Applicable must be Yes or No.",
-    "7. Save the workbook as .xlsx before importing.",
+    "3. Category is the broad group the product belongs to, e.g. Beverages or Detergents.",
+    "4. Subcategory is the specific group inside that category, e.g. Coffee or Washing Powder.",
+    "5. Brand is the manufacturer or brand, e.g. Nescafé, Dormans, Ariel or Sunlight.",
+    "6. Product Name is the specific product or line, e.g. Classic 100g or House Blend 250g.",
+    "7. Product Code is the unique identifier (SKU) for that product; no two products share one.",
+    "8. Subcategory and Brand may be left blank when they genuinely do not apply.",
+    "9. Never put the brand in the Category column, and do not repeat the brand in the "
+    "Product Name when the Brand column already carries it.",
+    "10. Category, Subcategory and Brand can be new or existing values; matching names are "
+    "grouped together automatically.",
+    "11. Prices must be numeric; do not type currency symbols into cells.",
+    "12. Opening Stock and Reorder Level must be non-negative numbers.",
+    "13. VAT Applicable must be Yes or No.",
+    "14. Save the workbook as .xlsx before importing.",
 )
 
 #: Column name / required / example, printed on the Instructions sheet.
-#: Blueprint 7.2: every one of the nine columns is required.
 _COLUMN_REFERENCE = (
-    ("Product Code", "Yes", "DET001"),
-    ("Product Name", "Yes", "Ariel Detergent 1kg"),
-    ("Category", "Yes", "Detergents"),
+    ("Product Code", "Yes", "COF001"),
+    ("Product Name", "Yes", "Classic"),
+    ("Category", "Yes", "Beverages"),
+    ("Subcategory", "No", "Coffee"),
+    ("Brand", "No", "Nescafé"),
     ("Unit", "Yes", "Piece"),
-    ("Cost Price", "Yes", "290"),
-    ("Selling Price", "Yes", "350"),
-    ("Opening Stock", "Yes", "40"),
-    ("Reorder Level", "Yes", "10"),
+    ("Cost Price", "Yes", "480"),
+    ("Selling Price", "Yes", "570"),
+    ("Opening Stock", "Yes", "24"),
+    ("Reorder Level", "Yes", "6"),
     ("VAT Applicable", "Yes", "Yes"),
+)
+
+#: What each level means, printed above the column reference on Instructions.
+HIERARCHY_GUIDE = (
+    ("Level", "What it holds", "Example"),
+    ("Category", "The broad group a product belongs to.", "Beverages"),
+    ("Subcategory", "The specific group inside that category.", "Coffee"),
+    ("Brand", "The manufacturer or brand of the product.", "Nescafé"),
+    ("Product Name", "The specific product or product line.", "Classic"),
+    ("Product Code", "The unique identifier (SKU) for that product.", "COF001"),
 )
 
 
@@ -149,9 +194,21 @@ def _build_instructions_sheet(sheet) -> None:
         sheet.cell(row=row, column=1, value=line)
         row += 1
 
-    row += 1
     header_font = Font(bold=True)
     header_fill = PatternFill("solid", fgColor=HEADER_FILL)
+
+    row += 1
+    sheet.cell(row=row, column=1, value="How products are organised").font = Font(bold=True, size=12)
+    row += 1
+    for offset, line in enumerate(HIERARCHY_GUIDE):
+        for column, value in enumerate(line, start=1):
+            cell = sheet.cell(row=row, column=column, value=value)
+            if offset == 0:
+                cell.font = header_font
+                cell.fill = header_fill
+        row += 1
+
+    row += 1
     for column, heading in enumerate(("Column", "Required", "Example"), start=1):
         cell = sheet.cell(row=row, column=column, value=heading)
         cell.font = header_font
@@ -163,7 +220,7 @@ def _build_instructions_sheet(sheet) -> None:
         row += 1
 
     sheet.column_dimensions["A"].width = 60
-    sheet.column_dimensions["B"].width = 12
+    sheet.column_dimensions["B"].width = 42
     sheet.column_dimensions["C"].width = 28
 
 

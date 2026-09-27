@@ -215,6 +215,8 @@ INVENTORY_COLUMNS = [
     ReportColumn("code", "Code"),
     ReportColumn("name", "Product"),
     ReportColumn("category", "Category"),
+    ReportColumn("subcategory", "Subcategory"),
+    ReportColumn("brand", "Brand"),
     ReportColumn("cost_price", "Cost Price", "money", "right"),
     ReportColumn("selling_price", "Selling Price", "money", "right"),
     ReportColumn("stock_quantity", "Stock", "int", "right"),
@@ -335,6 +337,8 @@ def inventory_report(*, include_inactive: bool = False) -> ReportResult:
                 "code": product.code,
                 "name": product.name,
                 "category": product.category_name,
+                "subcategory": product.subcategory_name,
+                "brand": product.brand_name,
                 "cost_price": to_money(product.cost_price),
                 "selling_price": to_money(product.selling_price),
                 "stock_quantity": product.stock_quantity,
@@ -487,7 +491,7 @@ def global_search(term: str, *, limit: int = 8) -> dict[str, list[dict]]:
                 {
                     "id": product.id,
                     "label": product.name,
-                    "detail": f"{product.code} | {product.category_name} | "
+                    "detail": f"{product.code} | {product.classification or 'Uncategorised'} | "
                     f"stock {product.stock_quantity}",
                 }
             )

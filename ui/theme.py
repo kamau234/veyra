@@ -4,6 +4,56 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from core.paths import FONT_DIR
+
+#: Fallbacks used when the bundled font cannot be registered.
+FALLBACK_FAMILIES = (
+    "Segoe UI",
+    "Inter",
+    "Roboto",
+    "Helvetica Neue",
+    "Arial",
+    "sans-serif",
+)
+
+_registered_families: list[str] = []
+
+
+def register_fonts() -> tuple[str, ...]:
+    """Load the TTFs shipped in ``assets/fonts`` so text renders everywhere.
+
+    Windows machines without the fonts named in the stylesheet (and headless
+    render targets) fall back to boxes, so VEYRA carries its own family and
+    puts it first in every rule. Registration is idempotent per process.
+    """
+    if not _registered_families:
+        from PySide6.QtGui import QFontDatabase, QGuiApplication
+
+        if QGuiApplication.instance() is None:
+            return ()
+
+        for path in sorted(FONT_DIR.glob("*.ttf")):
+            font_id = QFontDatabase.addApplicationFont(str(path))
+            if font_id >= 0:
+                for family in QFontDatabase.applicationFontFamilies(font_id):
+                    if family not in _registered_families:
+                        _registered_families.append(family)
+    return tuple(_registered_families)
+
+
+def font_stack() -> str:
+    """CSS font-family list: bundled family first, then system fallbacks."""
+    families = list(register_fonts())
+    families += [name for name in FALLBACK_FAMILIES if name not in families]
+    quoted = [f'"{name}"' if name != "sans-serif" else name for name in families]
+    return ", ".join(quoted)
+
+
+def primary_family() -> str | None:
+    """The bundled family name, or None when registration failed."""
+    families = register_fonts()
+    return families[0] if families else None
+
 
 @dataclass(frozen=True)
 class Theme:
@@ -91,9 +141,10 @@ FONT_SCALE = {"Small": 12, "Normal": 13, "Large": 15}
 
 def resolve_theme(name: str | None) -> Theme:
     """Map a settings value to a Theme; 'System' follows the OS preference."""
-    if name and name.lower() in THEMES:
-        return THEMES[name.capitalize()]
-    if name and name.lower() == "system":
+    key = (name or "").strip().capitalize()
+    if key in THEMES:
+        return THEMES[key]
+    if key == "System":
         return DARK if _system_prefers_dark() else LIGHT
     return LIGHT
 
@@ -122,10 +173,11 @@ def stylesheet(theme: Theme, font_size: str = "Normal") -> str:
     base = FONT_SCALE.get(font_size, FONT_SCALE["Normal"])
     sizes = font_sizes(base)
     radius = 8
+    family = font_stack()
 
     return f"""
 * {{
-    font-family: "Segoe UI", "Inter", "Roboto", "Helvetica Neue", Arial, sans-serif;
+    font-family: {family};
     font-size: {sizes['base']}px;
     color: {theme.text};
 }}
@@ -215,7 +267,14 @@ QCheckBox::indicator {{
     border: 1px solid {theme.border}; background: {theme.surface};
 }}
 QCheckBox::indicator:checked {{ background: {theme.primary}; border-color: {theme.primary}; }}
-QRadioButton {{ spacing: 7px; }}
+QRadioButton {{ spacing: 7px; color: {theme.text}; }}
+QRadioButton::indicator {{
+    width: 15px; height: 15px; border-radius: 8px;
+    border: 1px solid {theme.border}; background: {theme.surface};
+}}
+QRadioButton::indicator:checked {{
+    border: 5px solid {theme.primary}; background: {theme.surface};
+}}
 
 /* ---------------- buttons ---------------- */
 QPushButton {{
@@ -332,5 +391,47 @@ def apply_theme(app, theme_name: str, font_size: str) -> Theme:
     theme = resolve_theme(theme_name)
     app.veyra_theme = theme
     app.veyra_font_size = font_size
+    _apply_app_font(app, font_size)
+    _apply_palette(app, theme)
     app.setStyleSheet(stylesheet(theme, font_size))
     return theme
+
+
+def _apply_palette(app, theme: Theme) -> None:
+    """Cover the surfaces the stylesheet does not reach (scroll viewports...)."""
+    from PySide6.QtGui import QColor, QPalette
+
+    palette = app.palette()
+    roles = {
+        QPalette.ColorRole.Window: theme.app_background,
+        QPalette.ColorRole.WindowText: theme.text,
+        QPalette.ColorRole.Base: theme.app_background,
+        QPalette.ColorRole.AlternateBase: theme.surface_alt,
+        QPalette.ColorRole.Text: theme.text,
+        QPalette.ColorRole.Button: theme.surface,
+        QPalette.ColorRole.ButtonText: theme.text,
+        QPalette.ColorRole.Highlight: theme.primary,
+        QPalette.ColorRole.HighlightedText: theme.primary_text,
+        QPalette.ColorRole.ToolTipBase: theme.sidebar,
+        QPalette.ColorRole.ToolTipText: theme.sidebar_text,
+        QPalette.ColorRole.PlaceholderText: theme.muted,
+        QPalette.ColorRole.Light: theme.border,
+        QPalette.ColorRole.Mid: theme.border,
+        QPalette.ColorRole.Dark: theme.sidebar,
+    }
+    for role, value in roles.items():
+        palette.setColor(role, QColor(value))
+    app.setPalette(palette)
+
+
+def _apply_app_font(app, font_size: str) -> None:
+    """Set the widget-level font too, for anything the stylesheet misses."""
+    from PySide6.QtGui import QFont
+
+    family = primary_family()
+    if not family:
+        return
+    font = app.font()
+    font.setFamily(family)
+    font.setPixelSize(FONT_SCALE.get(font_size, FONT_SCALE["Normal"]))
+    app.setFont(font)

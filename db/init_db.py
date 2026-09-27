@@ -16,6 +16,16 @@ from db.session import new_session, reset_session_factory
 
 logger = get_logger("db.init")
 
+#: Additive schema steps for databases created by an older VEYRA. Every column
+#: here must be nullable so existing rows survive untouched — a migration never
+#: invents data, it only makes room for it.
+_ADDITIVE_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    "products": (
+        ("subcategory", "VARCHAR(120)"),
+        ("brand", "VARCHAR(120)"),
+    ),
+}
+
 
 def init_database(path: Path | None = None, *, echo: bool = False) -> Engine:
     """Create the engine, build all tables and seed the settings row."""
@@ -25,9 +35,31 @@ def init_database(path: Path | None = None, *, echo: bool = False) -> Engine:
     set_engine(engine)
     reset_session_factory()
     Base.metadata.create_all(engine)
+    _ensure_additive_columns(engine)
     logger.info("Schema ready (%d tables)", len(Base.metadata.tables))
     ensure_settings_row()
     return engine
+
+
+def _ensure_additive_columns(engine: Engine) -> None:
+    """Add columns introduced after a database was first created."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        for table, columns in _ADDITIVE_COLUMNS.items():
+            if table not in tables:
+                continue
+            present = {column["name"] for column in inspector.get_columns(table)}
+            for name, ddl in columns:
+                if name in present:
+                    continue
+                connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                connection.execute(
+                    text(f"CREATE INDEX IF NOT EXISTS ix_{table}_{name} ON {table} ({name})")
+                )
+                logger.info("Added missing column %s.%s", table, name)
 
 
 def ensure_settings_row() -> None:

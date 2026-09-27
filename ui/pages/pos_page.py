@@ -250,7 +250,7 @@ class PosPage(QWidget):
         for row in (self.subtotal_row, self.vat_row, self.discount_row, self.total_row):
             layout.addWidget(row)
 
-        buttons = QHBoxLayout()
+        buttons = QGridLayout()
         buttons.setSpacing(8)
         self.quantity_button = QPushButton("Quantity")
         self.quantity_button.clicked.connect(self.edit_quantity)
@@ -262,9 +262,11 @@ class PosPage(QWidget):
         self.clear_button = QPushButton("Clear Cart")
         self.clear_button.setProperty("variant", "quiet")
         self.clear_button.clicked.connect(self.clear_cart)
-        for button in (self.quantity_button, self.discount_button,
-                       self.remove_button, self.clear_button):
-            buttons.addWidget(button)
+        # 2x2 keeps the labels readable at the Large font size in a 400px panel.
+        buttons.addWidget(self.quantity_button, 0, 0)
+        buttons.addWidget(self.discount_button, 0, 1)
+        buttons.addWidget(self.remove_button, 1, 0)
+        buttons.addWidget(self.clear_button, 1, 1)
         layout.addLayout(buttons)
 
         self.complete_button = QPushButton("COMPLETE SALE")

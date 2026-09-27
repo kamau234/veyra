@@ -5,14 +5,20 @@ from __future__ import annotations
 from decimal import Decimal
 
 from sqlalchemy import case, func, or_, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, contains_eager, joinedload
 
 from core.constants import SORT_OPTIONS, StockStatus
 from core.money import to_money
-from models import Product
+from models import Category, Product
+
+
+def _key(value: object) -> str:
+    """Whitespace-collapsed, lower-cased key for matching free-text levels."""
+    return " ".join(str(value or "").split()).lower()
 
 
 def _status_condition(status: str):
+
     """SQL expression for a stock status (blueprint 14.2)."""
     if status == StockStatus.OUT_OF_STOCK:
         return Product.stock_quantity <= 0
@@ -44,6 +50,8 @@ class ProductRepository:
         *,
         search: str | None = None,
         category_id: int | None = None,
+        subcategory: str | None = None,
+        brand: str | None = None,
         status: str | None = None,
         sort: str | None = None,
         include_inactive: bool = False,
@@ -51,9 +59,15 @@ class ProductRepository:
         """Filter/sort products.
 
         ``include_inactive`` shows archived products too; selecting the
-        ``Archived`` status shows only those.
+        ``Archived`` status shows only those. ``subcategory`` and ``brand``
+        match case-insensitively and narrow the Category -> Subcategory ->
+        Brand hierarchy one level at a time.
         """
-        stmt = select(Product).options(joinedload(Product.category))
+        stmt = (
+            select(Product)
+            .outerjoin(Product.category)
+            .options(contains_eager(Product.category))
+        )
         status = status or "All"
 
         if status == "Archived":
@@ -66,12 +80,19 @@ class ProductRepository:
 
         if category_id:
             stmt = stmt.where(Product.category_id == category_id)
+        if subcategory:
+            stmt = stmt.where(func.lower(Product.subcategory) == _key(subcategory))
+        if brand:
+            stmt = stmt.where(func.lower(Product.brand) == _key(brand))
         if search:
-            pattern = f"%{' '.join(str(search).split()).lower()}%"
+            pattern = f"%{_key(search)}%"
             stmt = stmt.where(
                 or_(
                     func.lower(Product.name).like(pattern),
                     func.lower(Product.code).like(pattern),
+                    func.lower(Product.brand).like(pattern),
+                    func.lower(Product.subcategory).like(pattern),
+                    func.lower(Category.name).like(pattern),
                 )
             )
         return stmt.order_by(*_order_clause(sort))
@@ -81,6 +102,29 @@ class ProductRepository:
 
     def search(self, term: str, **filters) -> list[Product]:
         return self.list_products(search=term, **filters)
+
+    def _distinct(self, column, *, category_id=None, subcategory=None) -> list[str]:
+        """Distinct non-blank values of a hierarchy column, keeping their casing."""
+        stmt = select(column).where(Product.is_active.is_(True), column.is_not(None))
+        if category_id:
+            stmt = stmt.where(Product.category_id == category_id)
+        if subcategory:
+            stmt = stmt.where(func.lower(Product.subcategory) == _key(subcategory))
+
+        seen: dict[str, str] = {}
+        for (value,) in self.session.execute(stmt):
+            text = " ".join(str(value or "").split())
+            if text:
+                seen.setdefault(_key(text), text)
+        return [seen[key] for key in sorted(seen)]
+
+    def subcategories(self, *, category_id: int | None = None) -> list[str]:
+        """Subcategory names in use, optionally narrowed to one category."""
+        return self._distinct(Product.subcategory, category_id=category_id)
+
+    def brands(self, *, category_id: int | None = None, subcategory: str | None = None) -> list[str]:
+        """Brand names in use, optionally narrowed to a category/subcategory."""
+        return self._distinct(Product.brand, category_id=category_id, subcategory=subcategory)
 
     def get(self, product_id: int | None) -> Product | None:
         if not product_id:

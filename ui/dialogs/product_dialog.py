@@ -28,7 +28,15 @@ class ProductDialog(FormDialog):
 
     IMAGE_FILTERS = "Images (*.png *.jpg *.jpeg *.webp *.bmp);;All files (*)"
 
-    def __init__(self, parent: QWidget, *, product=None, categories: list[str] | None = None):
+    def __init__(
+        self,
+        parent: QWidget,
+        *,
+        product=None,
+        categories: list[str] | None = None,
+        subcategories: list[str] | None = None,
+        brands: list[str] | None = None,
+    ):
         self.product = product
         editing = product is not None
         super().__init__(
@@ -46,14 +54,24 @@ class ProductDialog(FormDialog):
         self.result_message = ""
 
         self.code = QLineEdit()
-        self.code.setPlaceholderText("DET001")
+        self.code.setPlaceholderText("COF001")
         self.name = QLineEdit()
-        self.name.setPlaceholderText("Ariel Detergent 1kg")
+        self.name.setPlaceholderText("Classic 100g")
 
         self.category = Combo()
         self.category.setEditable(True)
         self.category.addItems(categories or [])
-        self.category.lineEdit().setPlaceholderText("Uncategorised")
+        self.category.lineEdit().setPlaceholderText("Beverages")
+
+        self.subcategory = Combo()
+        self.subcategory.setEditable(True)
+        self.subcategory.addItems(subcategories or [])
+        self.subcategory.lineEdit().setPlaceholderText("Coffee")
+
+        self.brand = Combo()
+        self.brand.setEditable(True)
+        self.brand.addItems(brands or [])
+        self.brand.lineEdit().setPlaceholderText("Nescafé")
 
         self.unit = Combo()
         self.unit.addItems(list(UNITS))
@@ -67,10 +85,18 @@ class ProductDialog(FormDialog):
 
         self.add_row(
             Field("Product Code", self.code, required=True),
-            Field("Product Name", self.name, required=True),
+            Field("Product Name", self.name, required=True,
+                  hint="The product or line, without the brand if it has its own field."),
         )
         self.add_row(
-            Field("Category", self.category, hint="Pick an existing one or type a new name."),
+            Field("Category", self.category, required=True,
+                  hint="Broad group, e.g. Beverages. Pick one or type a new name."),
+            Field("Subcategory", self.subcategory,
+                  hint="Optional. The group inside the category, e.g. Coffee."),
+        )
+        self.add_row(
+            Field("Brand", self.brand,
+                  hint="Optional. The manufacturer or brand, e.g. Nescafé."),
             Field("Unit", self.unit),
         )
         self.add_row(
@@ -163,6 +189,8 @@ class ProductDialog(FormDialog):
         self.code.setText(product.code)
         self.name.setText(product.name)
         self.category.setCurrentText(product.category_name or "")
+        self.subcategory.setCurrentText(product.subcategory_name)
+        self.brand.setCurrentText(product.brand_name)
         index = self.unit.findText(product.unit or "Piece")
         self.unit.setCurrentIndex(max(index, 0))
         self.cost.set_decimal(product.cost_price)
@@ -176,6 +204,8 @@ class ProductDialog(FormDialog):
             code=self.code.text(),
             name=self.name.text(),
             category=self.category.currentText(),
+            subcategory=self.subcategory.currentText(),
+            brand=self.brand.currentText(),
             unit=self.unit.currentText(),
             cost_price=self.cost.decimal_value(),
             selling_price=self.selling.decimal_value(),

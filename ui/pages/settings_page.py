@@ -31,7 +31,8 @@ from core.exceptions import VeyraError
 from core.logger import get_logger, log_unexpected
 from core.money import format_rate
 from core.paths import BACKUP_DIR, DATA_HOME, DATABASE_PATH
-from services import backup_service, image_service, settings_service
+from services import backup_service, image_service, settings_service, sync_service
+from ui import theme as theme_module
 from ui.dialogs.base import ConfirmDialog, MessageDialog
 from ui.widgets.banner import Banner
 from ui.widgets.busy import BusyOverlay
@@ -57,6 +58,7 @@ class SettingsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         scroll = QScrollArea()
+        self.scroll_area = scroll
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         host = QWidget()
@@ -70,6 +72,7 @@ class SettingsPage(QWidget):
         layout.addWidget(self._business_card())
         layout.addWidget(self._appearance_card())
         layout.addWidget(self._tax_card())
+        layout.addWidget(self._cloud_card())
         layout.addWidget(self._data_card())
         layout.addStretch(1)
 
@@ -211,7 +214,7 @@ class SettingsPage(QWidget):
     # ------------------------------------------------------ appearance card
 
     def _appearance_card(self) -> Card:
-        card = Card("Appearance", "Applies immediately after saving.")
+        card = Card("Appearance", "Previewed instantly; Save Appearance keeps it for next time.")
 
         self.theme_group = QButtonGroup(self)
         theme_row = QHBoxLayout()
@@ -229,6 +232,9 @@ class SettingsPage(QWidget):
         self.font_size.setFixedWidth(180)
         card.add_widget(Field("Font Size", self.font_size))
 
+        self.theme_group.buttonClicked.connect(lambda _button: self._preview_appearance())
+        self.font_size.currentTextChanged.connect(lambda _text: self._preview_appearance())
+
         save = QPushButton("Save Appearance")
         save.setProperty("variant", "primary")
         save.clicked.connect(self.save_appearance)
@@ -237,6 +243,14 @@ class SettingsPage(QWidget):
         actions.addWidget(save)
         card.add_layout(actions)
         return card
+
+    def _preview_appearance(self) -> None:
+        """Apply the picked theme/size right away so the choice is visible."""
+        from PySide6.QtWidgets import QApplication
+
+        theme_module.apply_theme(
+            QApplication.instance(), self._selected_theme(), self.font_size.currentText()
+        )
 
     def _selected_theme(self) -> str:
         button = self.theme_group.checkedButton()
@@ -332,6 +346,125 @@ class SettingsPage(QWidget):
             return
         self._refresh_tax_hint()
         self.window_ref.notify(self.settings.vat_label + " saved for future sales.")
+
+    # ---------------------------------------------------------- cloud card
+
+    def _cloud_card(self) -> Card:
+        card = Card(
+            "Cloud Sync",
+            "Keeps a copy of the catalogue, sales ledger and profile in your "
+            "Supabase project so a new computer starts with yesterday's data.",
+        )
+
+        self.cloud_status = QLabel("")
+        self.cloud_status.setObjectName("FieldHint")
+        self.cloud_status.setWordWrap(True)
+        card.add_widget(self.cloud_status)
+
+        self.sync_id = SearchInput(sync_service.shop_id())
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(
+            Field("Sync ID - enter it on a new computer to restore", self.sync_id), 1
+        )
+        apply_id = QPushButton("Use This ID")
+        apply_id.setProperty("variant", "quiet")
+        apply_id.clicked.connect(self.apply_sync_id)
+        row.addWidget(apply_id)
+        card.add_layout(row)
+
+        self.auto_sync = QCheckBox("Sync automatically after changes")
+        self.auto_sync.setChecked(sync_service.auto_sync_enabled())
+        self.auto_sync.toggled.connect(sync_service.set_auto_sync)
+        card.add_widget(self.auto_sync)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        check = QPushButton("Check Connection")
+        check.clicked.connect(self.check_connection)
+        push = QPushButton("Sync Now")
+        push.setProperty("variant", "primary")
+        push.clicked.connect(self.sync_now)
+        pull = QPushButton("Restore From Cloud...")
+        pull.setProperty("variant", "quiet")
+        pull.clicked.connect(self.restore_from_cloud)
+        buttons.addWidget(check)
+        buttons.addWidget(push)
+        buttons.addWidget(pull)
+        buttons.addStretch(1)
+        card.add_layout(buttons)
+
+        hint = QLabel(
+            "First time? Open the Supabase SQL editor once and run cloud/schema.sql."
+        )
+        hint.setObjectName("FieldHint")
+        card.add_widget(hint)
+        self._refresh_cloud()
+        return card
+
+    def _refresh_cloud(self) -> None:
+        state = sync_service.load_state()
+        when = f" Last attempt: {state.last_at}." if state.last_at else ""
+        self.cloud_status.setText(f"{state.message}{when}")
+        if not self.sync_id.hasFocus():
+            self.sync_id.setText(sync_service.shop_id())
+
+    def apply_sync_id(self) -> None:
+        self.banner.clear()
+        try:
+            sync_service.set_shop_id(self.sync_id.text())
+        except VeyraError as error:
+            self.banner.show_message(error.message, "danger")
+            return
+        self._refresh_cloud()
+        self.window_ref.notify("Sync ID updated. Check the connection before restoring.")
+
+    def check_connection(self) -> None:
+        self.window_ref.run_sync(
+            sync_service.probe, "probe", on_done=lambda _result: self._refresh_cloud()
+        )
+
+    def sync_now(self) -> None:
+        self.window_ref.run_sync(
+            sync_service.push, "push", on_done=lambda _result: self._refresh_cloud()
+        )
+
+    def restore_from_cloud(self) -> None:
+        def done(result) -> None:
+            self._refresh_cloud()
+            if result.ok or "already holds" not in result.message:
+                return
+            if not ConfirmDialog.ask(
+                self,
+                "Replace the data on this computer?",
+                "Everything recorded here will be replaced by the cloud copy. VEYRA "
+                "takes a safety backup of the current data first.",
+                confirm_label="Replace And Restore",
+                variant="danger",
+            ):
+                return
+            try:
+                backup_service.create_backup()
+            except VeyraError as error:
+                self.banner.show_message(error.message, "danger")
+                return
+            self.window_ref.run_sync(
+                lambda: sync_service.pull_and_restore(allow_overwrite=True),
+                "pull",
+                on_done=self._after_restore,
+            )
+
+        self.window_ref.run_sync(
+            lambda: sync_service.pull_and_restore(allow_overwrite=False),
+            "pull",
+            on_done=done,
+        )
+
+    def _after_restore(self, result) -> None:
+        self._refresh_cloud()
+        if result.ok:
+            self.window_ref.reload_settings()
+            self.refresh()
 
     # ------------------------------------------------------------ data card
 
@@ -523,3 +656,10 @@ class SettingsPage(QWidget):
             button.setChecked(button.text().lower() == self.settings.theme.lower())
         self._refresh_tax_hint()
         self._refresh_backups()
+        self._refresh_cloud()
+        # Returning to the page drops any unsaved preview and shows what is stored.
+        from PySide6.QtWidgets import QApplication
+
+        theme_module.apply_theme(
+            QApplication.instance(), self.settings.theme, self.settings.font_size
+        )
